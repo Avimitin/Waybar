@@ -1,5 +1,6 @@
 #include "modules/niri/workspace_overview.hpp"
 
+#include <algorithm>
 #include <gtkmm/button.h>
 #include <gtkmm/label.h>
 #include <spdlog/spdlog.h>
@@ -65,6 +66,28 @@ void WorkspaceOverview::doUpdate() {
     }
   }
 
+  // Sort windows by scrolling layout position (column first, then row)
+  std::sort(workspace_windows.begin(), workspace_windows.end(),
+            [](const auto &a, const auto &b) {
+              // Check if windows have layout.pos_in_scrolling_layout
+              const auto &a_layout = a["layout"]["pos_in_scrolling_layout"];
+              const auto &b_layout = b["layout"]["pos_in_scrolling_layout"];
+
+              // Windows without layout info go to the end
+              if (a_layout.isNull() && b_layout.isNull()) return false;
+              if (a_layout.isNull()) return false;
+              if (b_layout.isNull()) return true;
+
+              // Both have layout info - sort by column first, then row
+              const auto a_col = a_layout[0].asInt();
+              const auto a_row = a_layout[1].asInt();
+              const auto b_col = b_layout[0].asInt();
+              const auto b_row = b_layout[1].asInt();
+
+              if (a_col != b_col) return a_col < b_col;
+              return a_row < b_row;
+            });
+
   // Remove buttons for windows not in current workspace
   for (auto it = buttons_.begin(); it != buttons_.end();) {
     auto win = std::find_if(workspace_windows.begin(), workspace_windows.end(),
@@ -103,6 +126,13 @@ void WorkspaceOverview::doUpdate() {
     }
 
     button.show();
+  }
+
+  // Reorder box children to match window order
+  for (size_t i = 0; i < workspace_windows.size(); i++) {
+    const auto win_id = workspace_windows[i]["id"].asUInt64();
+    auto &button = buttons_.at(win_id);
+    box_.reorder_child(button, i);
   }
 
   box_.show();
