@@ -5,6 +5,8 @@
 #include <gtkmm/label.h>
 #include <spdlog/spdlog.h>
 
+#include "util/rewrite_string.hpp"
+
 namespace waybar::modules::niri {
 
 WorkspaceOverview::WorkspaceOverview(const std::string &id, const Bar &bar,
@@ -118,6 +120,9 @@ void WorkspaceOverview::doUpdate() {
       label = fmt::format(fmt::runtime(format), fmt::arg("app_id", win["app_id"].asString()),
                           fmt::arg("title", win["title"].asString()));
     }
+
+    // Apply rewrite rules to label
+    label = waybar::util::rewriteString(label, config_["rewrite"]);
 
     if (!config_["disable-markup"].asBool()) {
       static_cast<Gtk::Label *>(button.get_children()[0])->set_markup(label);
