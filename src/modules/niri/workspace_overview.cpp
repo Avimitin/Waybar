@@ -69,8 +69,16 @@ void WorkspaceOverview::doUpdate() {
   }
 
   // Sort windows by scrolling layout position (column first, then row)
+  // Floating windows are sorted last
   std::sort(workspace_windows.begin(), workspace_windows.end(),
             [](const auto &a, const auto &b) {
+              const auto a_floating = a["is_floating"].asBool();
+              const auto b_floating = b["is_floating"].asBool();
+
+              // Floating windows go to the end
+              if (a_floating && !b_floating) return false;
+              if (!a_floating && b_floating) return true;
+
               // Check if windows have layout.pos_in_scrolling_layout
               const auto &a_layout = a["layout"]["pos_in_scrolling_layout"];
               const auto &b_layout = b["layout"]["pos_in_scrolling_layout"];
@@ -112,6 +120,11 @@ void WorkspaceOverview::doUpdate() {
       style_context->add_class("focused");
     else
       style_context->remove_class("focused");
+
+    if (win["is_floating"].asBool())
+      style_context->add_class("floating");
+    else
+      style_context->remove_class("floating");
 
     // Set button label (app_id or format string)
     std::string label = win["app_id"].asString();
