@@ -40,6 +40,7 @@
 #ifdef HAVE_NIRI
 #include "modules/niri/language.hpp"
 #include "modules/niri/window.hpp"
+#include "modules/niri/workspace_overview.hpp"
 #include "modules/niri/workspaces.hpp"
 #endif
 #ifdef HAVE_WAYFIRE
@@ -226,6 +227,9 @@ waybar::AModule* waybar::Factory::makeModule(const std::string& name,
     }
     if (ref == "niri/window") {
       return new waybar::modules::niri::Window(id, bar_, config_[name]);
+    }
+    if (ref == "niri/workspace-overview") {
+      return new waybar::modules::niri::WorkspaceOverview(id, bar_, config_[name]);
     }
     if (ref == "niri/workspaces") {
       return new waybar::modules::niri::Workspaces(id, bar_, config_[name]);

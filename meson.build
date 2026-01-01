@@ -338,6 +338,7 @@ if get_option('niri')
         'src/modules/niri/backend.cpp',
         'src/modules/niri/language.cpp',
         'src/modules/niri/window.cpp',
+        'src/modules/niri/workspace_overview.cpp',
         'src/modules/niri/workspaces.cpp',
     )
     man_files += files(
