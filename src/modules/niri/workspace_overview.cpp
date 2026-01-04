@@ -30,6 +30,14 @@ WorkspaceOverview::WorkspaceOverview(const std::string &id, const Bar &bar,
   gIPC->registerForIPC("WorkspaceActivated", this);
   gIPC->registerForIPC("WorkspaceActiveWindowChanged", this);
 
+  if (config_["icon-theme"].isArray()) {
+    for (auto &c : config_["icon-theme"]) {
+      icon_loader_.add_custom_icon_theme(c.asString());
+    }
+  } else if (config_["icon-theme"].isString()) {
+    icon_loader_.add_custom_icon_theme(config_["icon-theme"].asString());
+  }
+
   dp.emit();
 }
 
@@ -112,7 +120,8 @@ void WorkspaceOverview::doUpdate() {
   // Add buttons for new windows, update existing ones
   for (const auto &win : workspace_windows) {
     auto bit = buttons_.find(win["id"].asUInt64());
-    auto &button = bit == buttons_.end() ? addButton(win) : bit->second;
+    auto &button_struct = bit == buttons_.end() ? addButton(win) : *bit->second;
+    auto &button = button_struct.button;
     auto style_context = button.get_style_context();
 
     // Apply CSS classes based on window state
@@ -138,9 +147,29 @@ void WorkspaceOverview::doUpdate() {
     label = waybar::util::rewriteString(label, config_["rewrite"]);
 
     if (!config_["disable-markup"].asBool()) {
-      static_cast<Gtk::Label *>(button.get_children()[0])->set_markup(label);
+      button_struct.label.set_markup(label);
     } else {
-      button.set_label(label);
+      button_struct.label.set_text(label);
+    }
+    
+    if (label.empty()) {
+        button_struct.label.hide();
+    } else {
+        button_struct.label.show();
+    }
+
+    // Icon handling
+    if (config_["icon"].isBool() ? config_["icon"].asBool() : true) {
+       int icon_size = config_["icon-size"].isUInt() ? config_["icon-size"].asUInt() : 24;
+       auto app_id = win["app_id"].asString();
+       auto app_info = icon_loader_.get_app_info_from_app_id_list(app_id);
+       if (icon_loader_.image_load_icon(button_struct.icon, app_info, icon_size)) {
+           button_struct.icon.show();
+       } else {
+           button_struct.icon.hide();
+       }
+    } else {
+        button_struct.icon.hide();
     }
 
     button.show();
@@ -149,8 +178,8 @@ void WorkspaceOverview::doUpdate() {
   // Reorder box children to match window order
   for (size_t i = 0; i < workspace_windows.size(); i++) {
     const auto win_id = workspace_windows[i]["id"].asUInt64();
-    auto &button = buttons_.at(win_id);
-    box_.reorder_child(button, i);
+    auto &button_struct = *buttons_.at(win_id);
+    box_.reorder_child(button_struct.button, i);
   }
 
   box_.show();
@@ -161,18 +190,22 @@ void WorkspaceOverview::update() {
   AModule::update();
 }
 
-Gtk::Button &WorkspaceOverview::addButton(const Json::Value &win) {
-  std::string label = win["app_id"].asString();
-
-  auto pair = buttons_.emplace(win["id"].asUInt64(), label);
-  auto &&button = pair.first->second;
-  box_.pack_start(button, false, false, 0);
-  button.set_relief(Gtk::RELIEF_NONE);
+WorkspaceOverview::WindowButton &WorkspaceOverview::addButton(const Json::Value &win) {
+  auto wb = std::make_unique<WindowButton>();
+  
+  wb->content_box.set_orientation(Gtk::ORIENTATION_HORIZONTAL);
+  wb->content_box.set_spacing(4);
+  wb->content_box.pack_start(wb->icon, false, false, 0);
+  wb->content_box.pack_start(wb->label, false, false, 0);
+  wb->content_box.show();
+  
+  wb->button.add(wb->content_box);
+  wb->button.set_relief(Gtk::RELIEF_NONE);
 
   // Click handler to focus window
   if (!config_["disable-click"].asBool()) {
     const auto id = win["id"].asUInt64();
-    button.signal_pressed().connect([id] {
+    wb->button.signal_pressed().connect([id] {
       try {
         // {"Action":{"FocusWindow":{"id":window_id}}}
         Json::Value request(Json::objectValue);
@@ -187,7 +220,11 @@ Gtk::Button &WorkspaceOverview::addButton(const Json::Value &win) {
     });
   }
 
-  return button;
+  auto res = buttons_.emplace(win["id"].asUInt64(), std::move(wb));
+  WindowButton &inserted_wb = *res.first->second;
+  box_.pack_start(inserted_wb.button, false, false, 0);
+  
+  return inserted_wb;
 }
 
 }  // namespace waybar::modules::niri
