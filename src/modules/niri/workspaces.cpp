@@ -57,28 +57,31 @@ void Workspaces::doUpdate() {
                });
 
   // Find active workspace
-  uint64_t active_ws_id = 0;
-  bool has_active_ws = false;
   for (const auto &ws : my_workspaces) {
     if ((!alloutputs && ws["is_active"].asBool()) || (alloutputs && ws["is_focused"].asBool())) {
-       active_ws_id = ws["id"].asUInt64();
-       has_active_ws = true;
        break;
     }
   }
 
-  // Get windows for active workspace if icons enabled
-  std::vector<Json::Value> active_windows;
-  if (show_icons && has_active_ws) {
+  // Get windows for visible workspaces if icons enabled
+  std::vector<Json::Value> visible_windows;
+  std::map<uint64_t, std::vector<Json::Value>> workspace_windows;
+
+  if (show_icons) {
       const auto &windows = gIPC->windows();
       for (const auto &win : windows) {
-          if (win["workspace_id"].asUInt64() == active_ws_id) {
-              active_windows.push_back(win);
+          uint64_t workspace_id = win["workspace_id"].asUInt64();
+          auto it = std::find_if(my_workspaces.begin(), my_workspaces.end(),
+                                 [workspace_id](const auto &ws) { return ws["id"].asUInt64() == workspace_id; });
+          if (it != my_workspaces.end()) {
+              visible_windows.push_back(win);
+              workspace_windows[workspace_id].push_back(win);
           }
       }
 
-      // Sort windows (same as WorkspaceOverview)
-      std::sort(active_windows.begin(), active_windows.end(),
+      // Sort windows for each workspace
+      for (auto &[ws_id, wins] : workspace_windows) {
+          std::sort(wins.begin(), wins.end(),
             [](const auto &a, const auto &b) {
               const auto a_floating = a["is_floating"].asBool();
               const auto b_floating = b["is_floating"].asBool();
@@ -105,163 +108,267 @@ void Workspaces::doUpdate() {
               if (a_col != b_col) return a_col < b_col;
               return a_row < b_row;
             });
+      }
   }
 
-  // Remove buttons for removed workspaces OR active workspace if showing icons AND has windows
+  // CLEANUP
+  // Remove buttons for removed workspaces
   for (auto it = buttons_.begin(); it != buttons_.end();) {
     auto ws = std::find_if(my_workspaces.begin(), my_workspaces.end(),
                            [it](const auto &ws) { return ws["id"].asUInt64() == it->first; });
-    
-    bool should_remove = (ws == my_workspaces.end());
-    if (!should_remove && show_icons && it->first == active_ws_id && !active_windows.empty()) {
-        should_remove = true;
-    }
-
-    if (should_remove) {
+    if (ws == my_workspaces.end()) {
       it = buttons_.erase(it);
     } else {
       ++it;
     }
   }
 
+  // Remove groups for removed workspaces
+  for (auto it = workspace_groups_.begin(); it != workspace_groups_.end();) {
+      auto ws = std::find_if(my_workspaces.begin(), my_workspaces.end(),
+                           [it](const auto &ws) { return ws["id"].asUInt64() == it->first; });
+      if (ws == my_workspaces.end()) {
+          it = workspace_groups_.erase(it);
+      } else {
+          ++it;
+      }
+  }
+
   // Remove window buttons that are no longer present
   for (auto it = window_buttons_.begin(); it != window_buttons_.end();) {
-      auto win = std::find_if(active_windows.begin(), active_windows.end(),
+      auto win = std::find_if(visible_windows.begin(), visible_windows.end(),
                               [it](const auto &w) { return w["id"].asUInt64() == it->first; });
-      if (win == active_windows.end()) {
+      if (win == visible_windows.end()) {
           it = window_buttons_.erase(it);
       } else {
           ++it;
       }
   }
   
-  // Update/Add Workspace Buttons
+  // RENDER WORKSPACES
   for (const auto &ws : my_workspaces) {
       uint64_t id = ws["id"].asUInt64();
-      if (show_icons && id == active_ws_id && !active_windows.empty()) continue;
+      bool has_windows = workspace_windows.count(id) && !workspace_windows[id].empty();
 
-    auto bit = buttons_.find(id);
-    auto &button = bit == buttons_.end() ? addButton(ws) : bit->second;
-    auto style_context = button.get_style_context();
+      if (has_windows) {
+          // MODE: EXPANDED (Windows visible)
+          
+          // Ensure standard button is hidden/removed?
+          // We keep the button in the map but ensure it's not visible/packed if we are showing group
+          if (buttons_.contains(id)) {
+              buttons_.at(id).hide(); 
+          }
 
-    if (ws["is_focused"].asBool())
-      style_context->add_class("focused");
-    else
-      style_context->remove_class("focused");
+          // Get/Create Group Box
+          if (!workspace_groups_.contains(id)) {
+              auto group = std::make_unique<WorkspaceGroup>();
+              group->box.set_orientation(bar_.orientation);
+              group->box.get_style_context()->add_class("workspace-group");
+              group->label.get_style_context()->add_class("workspace-group-label");
+              group->box.pack_start(group->label, false, false, 0); // Pack label first (reordered later)
+              box_.pack_start(group->box, false, false, 0);
+              workspace_groups_[id] = std::move(group);
+          }
+          auto &group_struct = *workspace_groups_[id];
+          auto &group_box = group_struct.box;
+          auto &group_label = group_struct.label;
+          group_box.show();
 
-    if (ws["is_active"].asBool())
-      style_context->add_class("active");
-    else
-      style_context->remove_class("active");
-
-    if (ws["is_urgent"].asBool())
-      style_context->add_class("urgent");
-    else
-      style_context->remove_class("urgent");
-
-    if (ws["output"]) {
-      if (ws["output"].asString() == bar_.output->name)
-        style_context->add_class("current_output");
-      else
-        style_context->remove_class("current_output");
-    } else {
-      style_context->remove_class("current_output");
-    }
-
-    if (ws["active_window_id"].isNull())
-      style_context->add_class("empty");
-    else
-      style_context->remove_class("empty");
-
-    std::string name;
-    if (ws["name"]) {
-      style_context->remove_class("unnamed");
-      name = ws["name"].asString();
-    } else {
-      style_context->add_class("unnamed");
-      name = std::to_string(ws["idx"].asUInt());
-    }
-    button.set_name("niri-workspace-" + name);
-
-    if (config_["format"].isString()) {
-      auto format = config_["format"].asString();
-      name = fmt::format(fmt::runtime(format), fmt::arg("icon", getIcon(name, ws)),
-                         fmt::arg("value", name), fmt::arg("name", ws["name"].asString()),
+          // Update Label Text
+          std::string ws_name;
+          if (ws["name"]) {
+             ws_name = ws["name"].asString();
+          } else {
+             ws_name = std::to_string(ws["idx"].asUInt());
+          }
+          
+          // Use format if available (simplified for label)
+          if (config_["format"].isString()) {
+              auto format = config_["format"].asString();
+              ws_name = fmt::format(fmt::runtime(format), fmt::arg("icon", getIcon(ws_name, ws)),
+                         fmt::arg("value", ws_name), fmt::arg("name", ws["name"].asString()),
                          fmt::arg("index", ws["idx"].asUInt()),
                          fmt::arg("output", ws["output"].asString()));
-    }
-    if (!config_["disable-markup"].asBool()) {
-      static_cast<Gtk::Label *>(button.get_children()[0])->set_markup(name);
-    } else {
-      button.set_label(name);
-    }
+          }
 
-    if (config_["current-only"].asBool()) {
-      const auto *property = alloutputs ? "is_focused" : "is_active";
-      if (ws[property].asBool())
-        button.show();
-      else
-        button.hide();
-    } else {
-      button.show();
-    }
-  }
+          if (!config_["disable-markup"].asBool()) {
+             group_label.set_markup(ws_name);
+          } else {
+             group_label.set_text(ws_name);
+          }
+          group_label.show();
 
-  // Update/Add Window Buttons
-  for (const auto &win : active_windows) {
-    auto bit = window_buttons_.find(win["id"].asUInt64());
-    auto &button_struct = bit == window_buttons_.end() ? addWindowButton(win) : *bit->second;
-    auto &button = button_struct.button;
-    auto style_context = button.get_style_context();
+          // Style the group
+          auto style = group_box.get_style_context();
+          if (ws["is_active"].asBool()) {
+             style->add_class("active-workspace");
+             style->remove_class("inactive-workspace");
+          } else {
+             style->remove_class("active-workspace");
+             style->add_class("inactive-workspace");
+          }
+          
+          if (ws["output"].asString() == bar_.output->name)
+             style->add_class("current_output");
+          else
+             style->remove_class("current_output");
 
-    style_context->add_class("app-icon");
+          // Update Windows
+          int win_idx = 0;
+          for (const auto &win : workspace_windows[id]) {
+            auto bit = window_buttons_.find(win["id"].asUInt64());
+            auto &button_struct = bit == window_buttons_.end() ? addWindowButton(win) : *bit->second;
+            auto &button = button_struct.button;
+            auto btn_style = button.get_style_context();
 
-    if (win["is_focused"].asBool())
-      style_context->add_class("focused");
-    else
-      style_context->remove_class("focused");
+            // Reparent if needed
+            if (button.get_parent() != &group_box) {
+                if (button.get_parent()) button.get_parent()->remove(button);
+                group_box.pack_start(button, false, false, 0);
+            }
+            group_box.reorder_child(button, win_idx++);
 
-    if (win["is_floating"].asBool())
-      style_context->add_class("floating");
-    else
-      style_context->remove_class("floating");
+            btn_style->add_class("app-icon");
+            if (win["is_focused"].asBool()) {
+              btn_style->add_class("focused");
+              btn_style->remove_class("inactive");
+            } else {
+              btn_style->remove_class("focused");
+              btn_style->add_class("inactive");
+            }
+            
+            // These classes on the window button are less useful now that we have the group,
+            // but we keep them for backward compatibility/extra control.
+            if (ws["is_active"].asBool()) {
+                btn_style->add_class("active-workspace");
+                btn_style->remove_class("inactive-workspace");
+            } else {
+                btn_style->remove_class("active-workspace");
+                btn_style->add_class("inactive-workspace");
+            }
 
-    std::string label = win["app_id"].asString();
-    if (config_["format-window"].isString()) {
-      auto format = config_["format-window"].asString();
-      label = fmt::format(fmt::runtime(format), fmt::arg("title", win["title"].asString()),
-                          fmt::arg("app_id", win["app_id"].asString()));
-    }
+            if (win["is_floating"].asBool())
+              btn_style->add_class("floating");
+            else
+              btn_style->remove_class("floating");
 
-    label = waybar::util::rewriteString(label, config_["rewrite"]);
+            // Format Label/Icon ...
+            std::string label = win["app_id"].asString();
+            if (config_["format-window"].isString()) {
+              auto format = config_["format-window"].asString();
+              label = fmt::format(fmt::runtime(format), fmt::arg("title", win["title"].asString()),
+                                  fmt::arg("app_id", win["app_id"].asString()));
+            }
 
-    if (!config_["disable-markup"].asBool()) {
-      button_struct.label.set_markup(label);
-    } else {
-      button_struct.label.set_text(label);
-    }
-    
-    if (label.empty()) {
-        button_struct.label.hide();
-    } else {
-        button_struct.label.show();
-    }
+            label = waybar::util::rewriteString(label, config_["rewrite"]);
 
-    // Icon handling
-    if (config_["icon"].isBool() ? config_["icon"].asBool() : true) {
-       int icon_size = config_["icon-size"].isUInt() ? config_["icon-size"].asUInt() : 24;
-       auto app_id = win["app_id"].asString();
-       auto app_info = icon_loader_.get_app_info_from_app_id_list(app_id);
-       if (icon_loader_.image_load_icon(button_struct.icon, app_info, icon_size)) {
-           button_struct.icon.show();
-       } else {
-           button_struct.icon.hide();
-       }
-    } else {
-        button_struct.icon.hide();
-    }
+            if (!config_["disable-markup"].asBool()) {
+              button_struct.label.set_markup(label);
+            } else {
+              button_struct.label.set_text(label);
+            }
+            
+            if (label.empty()) {
+                button_struct.label.hide();
+            } else {
+                button_struct.label.show();
+            }
 
-    button.show();
+            // Icon handling
+            if (config_["icon"].isBool() ? config_["icon"].asBool() : true) {
+               int icon_size = config_["icon-size"].isUInt() ? config_["icon-size"].asUInt() : 24;
+               auto app_id = win["app_id"].asString();
+               auto app_info = icon_loader_.get_app_info_from_app_id_list(app_id);
+               if (icon_loader_.image_load_icon(button_struct.icon, app_info, icon_size)) {
+                   button_struct.icon.show();
+               } else {
+                   button_struct.icon.hide();
+               }
+            } else {
+                button_struct.icon.hide();
+            }
+
+            button.show();
+          }
+
+          // Move label to the end
+          group_box.reorder_child(group_label, win_idx);
+
+
+      } else {
+        // MODE: COLLAPSED (Standard Button)
+        
+        // Hide group if exists
+        if (workspace_groups_.contains(id)) {
+            workspace_groups_[id]->box.hide();
+        }
+
+        auto bit = buttons_.find(id);
+        auto &button = bit == buttons_.end() ? addButton(ws) : bit->second;
+        auto style_context = button.get_style_context();
+
+        if (ws["is_focused"].asBool())
+          style_context->add_class("focused");
+        else
+          style_context->remove_class("focused");
+
+        if (ws["is_active"].asBool())
+          style_context->add_class("active");
+        else
+          style_context->remove_class("active");
+
+        if (ws["is_urgent"].asBool())
+          style_context->add_class("urgent");
+        else
+          style_context->remove_class("urgent");
+
+        if (ws["output"]) {
+          if (ws["output"].asString() == bar_.output->name)
+            style_context->add_class("current_output");
+          else
+            style_context->remove_class("current_output");
+        } else {
+          style_context->remove_class("current_output");
+        }
+
+        if (ws["active_window_id"].isNull())
+          style_context->add_class("empty");
+        else
+          style_context->remove_class("empty");
+
+        std::string name;
+        if (ws["name"]) {
+          style_context->remove_class("unnamed");
+          name = ws["name"].asString();
+        } else {
+          style_context->add_class("unnamed");
+          name = std::to_string(ws["idx"].asUInt());
+        }
+        button.set_name("niri-workspace-" + name);
+
+        if (config_["format"].isString()) {
+          auto format = config_["format"].asString();
+          name = fmt::format(fmt::runtime(format), fmt::arg("icon", getIcon(name, ws)),
+                             fmt::arg("value", name), fmt::arg("name", ws["name"].asString()),
+                             fmt::arg("index", ws["idx"].asUInt()),
+                             fmt::arg("output", ws["output"].asString()));
+        }
+        if (!config_["disable-markup"].asBool()) {
+          static_cast<Gtk::Label *>(button.get_children()[0])->set_markup(name);
+        } else {
+          button.set_label(name);
+        }
+
+        if (config_["current-only"].asBool()) {
+          const auto *property = alloutputs ? "is_focused" : "is_active";
+          if (ws[property].asBool())
+            button.show();
+          else
+            button.hide();
+        } else {
+          button.show();
+        }
+      }
   }
 
   // Final Reorder
@@ -281,19 +388,12 @@ void Workspaces::doUpdate() {
 
   for (const auto &pair : nameIdPairs) {
       uint64_t ws_id = pair.second;
-      if (show_icons && ws_id == active_ws_id && !active_windows.empty()) {
-          // Add window buttons
-          for (const auto &win : active_windows) {
-              uint64_t win_id = win["id"].asUInt64();
-              if (window_buttons_.contains(win_id)) {
-                  box_.reorder_child(window_buttons_.at(win_id)->button, child_idx++);
-              }
-          }
-      } else {
-          // Add workspace button
-          if (buttons_.contains(ws_id)) {
-              box_.reorder_child(buttons_.at(ws_id), child_idx++);
-          }
+      bool has_windows = workspace_windows.count(ws_id) && !workspace_windows[ws_id].empty();
+
+      if (has_windows && workspace_groups_.contains(ws_id)) {
+          box_.reorder_child(workspace_groups_[ws_id]->box, child_idx++);
+      } else if (buttons_.contains(ws_id)) {
+          box_.reorder_child(buttons_.at(ws_id), child_idx++);
       }
   }
 }
@@ -367,7 +467,6 @@ Workspaces::WindowButton &Workspaces::addWindowButton(const Json::Value &win) {
 
   auto res = window_buttons_.emplace(win["id"].asUInt64(), std::move(wb));
   WindowButton &inserted_wb = *res.first->second;
-  box_.pack_start(inserted_wb.button, false, false, 0);
   
   return inserted_wb;
 }

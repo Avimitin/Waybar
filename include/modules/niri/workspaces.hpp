@@ -25,6 +25,11 @@ class Workspaces : public AModule, public EventHandler {
     Gtk::Label label;
   };
 
+  struct WorkspaceGroup {
+    Gtk::Box box;
+    Gtk::Label label;
+  };
+
   void onEvent(const Json::Value &ev) override;
   void doUpdate();
   Gtk::Button &addButton(const Json::Value &ws);
@@ -36,6 +41,8 @@ class Workspaces : public AModule, public EventHandler {
   IconLoader icon_loader_;
   // Map from niri workspace id to button.
   std::unordered_map<uint64_t, Gtk::Button> buttons_;
+  // Map from niri workspace id to a box containing window buttons.
+  std::unordered_map<uint64_t, std::unique_ptr<WorkspaceGroup>> workspace_groups_;
   // Map from niri window id to button.
   std::unordered_map<uint64_t, std::unique_ptr<WindowButton>> window_buttons_;
 };
